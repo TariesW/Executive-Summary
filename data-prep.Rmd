@@ -1,0 +1,140 @@
+---
+title: "Data preparation"
+output:
+  pdf_document: default
+---
+
+# Instructions
+
+- You only need to submit the .Rmd of this file, not a PDF.
+
+- You should __comment__ your code clearly to show what you've done to prepare the data.
+
+- The purpose of this file is to use the data in the `data-raw` folder to create the data you will use in the report. The data you will use in the report should be saved in the `data` folder. It is good professional practice to make sure you're never directly modifying your raw data, but instead creating new datasets based on merges/manipulations that you need to reuse.
+
+- Make sure you've taken a look at the hints for the web scraping and census API. 
+
+- You may find the `write_rds()` function from the `readr` package helpful (it is loaded as part of the `tidyverse`).
+
+- You do not need to keep the structure below.
+
+# Set up
+
+```{r, libraries}
+# Set up any libraries you need
+library(tidyverse)
+library(polite)
+library(rvest)
+library(cancensus)
+library(haven)
+```
+
+# Loading client data
+
+```{r}
+cust_dev<- read_rds("data-raw/cust_dev.Rds")
+customer<- read_rds("data-raw/customer.Rds")
+#load data
+cust_sleep<- read_rds("data-raw/cust_sleep.Rds")
+
+device<- read_rds("data-raw/device.Rds")
+```
+
+# Getting external data
+
+## Web scraping industry data
+
+```{r}
+url <- "https://fitnesstrackerinfohub.netlify.app"
+
+# Make sure this code is updated appropriately to provide 
+# informative user_agent details
+target <- bow(url,
+              user_agent = "ellazhang.zhang@utoronto.ca for STA303/1002 project",
+              force = TRUE)
+
+# Any details provided in the robots text on crawl delays and 
+# which agents are allowed to scrape
+target
+
+html <- scrape(target)
+
+device_data <- html %>% 
+  html_elements("table") %>% 
+  html_table() %>% 
+  pluck(1) # added, in case you're getting a list format
+```
+
+# Census API
+
+```{r}
+options(cancensus.api_key = "CensusMapper_307a081ba8f2a9c0c32cb9240f89bbf2",
+        cancensus.cache_path = "cache") # this sets a folder for your cache
+
+# get all regions as at the 2016 Census (2020 not up yet)
+regions <- list_census_regions(dataset = "CA16")
+
+regions_filtered <-  regions %>% 
+  filter(level == "CSD") %>% # Figure out what CSD means in Census data
+  as_census_region_list()
+
+# This can take a while
+# We want to get household median income
+census_data_csd <- get_census(dataset='CA16', regions = regions_filtered,
+                          vectors=c("v_CA16_2397"), 
+                          level='CSD')
+
+# Simplify to only needed variables
+median_income <- census_data_csd %>% 
+  as_tibble() %>% 
+  select(CSDuid = GeoUID, contains("median"), Population) %>% 
+  mutate(CSDuid = parse_number(CSDuid)) %>% 
+  rename(hhld_median_inc = 2)
+```
+
+#Post code conversion
+```{r}
+dataset = read_sav("data-raw/pccfNat_fccpNat_082021sav.sav")
+
+postcode <- dataset %>% 
+  select(PC, CSDuid)
+```
+
+#merge data
+```{r}
+postcode_income<- postcode %>% distinct(PC,.keep_all=TRUE)%>%
+  left_join(median_income, by="CSDuid")
+  #repeated postcode value with same CSDuid
+  #default way to choose the first value
+
+customer_data<- customer %>% left_join(cust_dev, by="cust_id")%>%
+  left_join(device, by="dev_id")
+#join the device data
+
+customer_data<- customer_data%>% left_join(postcode_income, by= c("postcode"="PC"))%>%
+  select(-pronouns, -released)
+#combine customer_data with postcode_income 
+#eliminate CSDuid, same with postcode
+#duplicated info, eliminate pronouns
+
+customer_data<- customer_data %>% filter(!is.na(sex))%>%
+  mutate(age =2022-as.numeric(substr(dob,1,4)))%>% select(-dob)
+#use dob calculate the age of customer
+#duplicated info, eliminate dob
+
+customer_data<- customer_data %>%
+  mutate(skin_color= case_when(emoji_modifier=="U+1F3FF"~"Dark",
+                         emoji_modifier=="U+1F3FD"~"Medium",
+                         emoji_modifier=="U+1F3FC"~"Medium~Light",
+                         emoji_modifier=="U+1F3FB"~"Light",
+                         emoji_modifier=="U+1F3FE"~"Medium~Dark",
+                         is.na(emoji_modifier)~"Default")) %>%
+           select(-emoji_modifier)
+#through emoji_modifier know their skin color
+#duplicated info, eliminate emoji_modifier
+
+write_rds(customer_data,"/Users/LuHongTu/Desktop/0-Tuo/303final/data/customer_data.Rds")
+write_rds(cust_sleep,"/Users/LuHongTu/Desktop/0-Tuo/303final/data/cust_sleep.Rds")
+#export the data as rds
+```
+
